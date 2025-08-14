@@ -1,12 +1,13 @@
 # Core LangChain and LLM dependencies
-langchain==0.1.0
-langchain-groq==0.1.9
-langchain-community==0.0.38
+langchain==0.3.27
+langchain-groq==0.3.7
+langchain-community==0.3.27
+langchain-google-community==2.0.7
 
 # Web scraping and search
-requests==2.31.0
-beautifulsoup4==4.12.2
-duckduckgo-search==4.1.1
+requests==2.32.4
+beautifulsoup4==4.13.4
+google-api-python-client==2.161.0
 
 # Data handling and utilities
 python-dotenv==1.0.0

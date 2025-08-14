@@ -17,7 +17,7 @@ from urllib.parse import urljoin, urlparse
 from langchain_groq import ChatGroq
 from langchain.prompts import PromptTemplate
 from langchain.schema import BaseOutputParser
-from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
+from langchain_google_community import GoogleSearchAPIWrapper
 import json
 from dotenv import load_dotenv
 
@@ -171,10 +171,14 @@ Guidelines for creating search queries:
 4. Use keywords that news sites and tech blogs commonly use
 5. Include time-sensitive terms like "2024", "latest", "new", "breakthrough"
 
-Return ONLY a JSON array of {k} search query strings, like:
-["query 1", "query 2", "query 3"]
+Your response should EXACTLY follow the format:
+[
+    "query 1",
+    "query 2",
+    "query 3"
+]
 
-Search queries:
+without any introduction or explanation.
 """
         )
         
@@ -244,9 +248,9 @@ def extract_text_from_url(url: str, max_length: int = 500) -> str:
 
 
 def search_web_content(search_query: str, k: int = 5) -> List[LinkSummary]:
-    """Search the web and return k [link, summary] pairs for the given query.
+    """Search the web using Google Search API and return k [link, summary] pairs.
     
-    This function searches the internet using the provided query and returns
+    This function searches the internet using Google Search API and returns
     relevant articles, websites, and news with their summaries.
     
     Args:
@@ -255,10 +259,13 @@ def search_web_content(search_query: str, k: int = 5) -> List[LinkSummary]:
         
     Returns:
         List of LinkSummary objects containing links and summaries
+        
+    Note:
+        Requires GOOGLE_CSE_ID and GOOGLE_API_KEY environment variables
     """
-    try:
-        # Initialize DuckDuckGo search
-        search = DuckDuckGoSearchAPIWrapper(max_results = k * 2)  # Get more results to filter
+    try:        
+        # Initialize Google search
+        search = GoogleSearchAPIWrapper(k = k * 2)  # Get more results to filter
         
         # Perform search
         results = search.results(search_query, k * 2)
@@ -278,15 +285,18 @@ def search_web_content(search_query: str, k: int = 5) -> List[LinkSummary]:
             detailed_content = extract_text_from_url(link)
             
             # Create summary combining title, snippet, and extracted content
-            summary_parts = []
-            if title:
-                summary_parts.append(f"Title: {title}")
-            if snippet:
-                summary_parts.append(f"Snippet: {snippet}")
             if detailed_content:
+                # Full summary with extracted content
+                summary_parts = []
+                if title:
+                    summary_parts.append(f"Title: {title}")
+                if snippet:
+                    summary_parts.append(f"Snippet: {snippet}")
                 summary_parts.append(f"Content: {detailed_content}")
-                
-            summary = " | ".join(summary_parts)
+                summary = " | ".join(summary_parts)
+            else:
+                # Fallback format when content extraction fails
+                summary = f"Title: {title} :: Snippet: {snippet}"
             
             link_summaries.append(LinkSummary(
                 link = link,
@@ -438,16 +448,29 @@ def get_relevant_ai_trends(text_input: str, k: int = 5) -> List[LinkSummary]:
 
 # Example usage and testing
 if __name__ == "__main__":
-    # Test the main function
-    test_input = "Philippines AI trends"
+    # # Test the main function
+    # test_input = "Philippines AI trends"
     
-    print(f"Searching for: {test_input}")
-    print("=" * 50)
+    # print(f"Searching for: {test_input}")
+    # print("=" * 50)
     
-    results = get_relevant_ai_trends(test_input, k = 3)
+    # results = get_relevant_ai_trends(test_input, k = 3)
     
-    for i, result in enumerate(results, 1):
-        print(f"\n{i}. Relevance Score: {result.relevance_score:.2f}")
-        print(f"   Link: {result.link}")
-        print(f"   Summary: {result.summary[:200]}...")
-        print("-" * 50)
+    # for i, result in enumerate(results, 1):
+    #     print(f"\n{i}. Relevance Score: {result.relevance_score:.2f}")
+    #     print(f"   Link: {result.link}")
+    #     print(f"   Summary: {result.summary[:200]}...")
+    #     print("-" * 50)
+
+    test_input = "Philippines AI trends this year"
+    results = generate_search_queries(test_input, k = 2)
+    print('-' * 30)
+    for result in results:
+        print(result)
+        print('-' * 30)
+    web_results = search_web_content(results[1], k = 2)
+    print('-' * 30)
+    for result in web_results:
+        print(result.link)
+        print(result.summary)
+        print('-' * 30)
