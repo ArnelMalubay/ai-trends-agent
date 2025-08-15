@@ -11,9 +11,9 @@ import logging
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 import requests
-from bs4 import BeautifulSoup
 import re
 from urllib.parse import urljoin, urlparse
+from langchain_community.document_loaders import UnstructuredURLLoader
 from langchain_groq import ChatGroq
 from langchain.prompts import PromptTemplate
 from langchain.schema import BaseOutputParser
@@ -35,47 +35,6 @@ class LinkSummary:
     link: str
     summary: str
     relevance_score: Optional[float] = None
-
-
-class SearchQueryParser(BaseOutputParser):
-    """Parser for extracting search queries from LLM output."""
-    
-    def parse(self, text: str) -> List[str]:
-        """Parse the LLM output to extract search queries.
-        
-        Args:
-            text: Raw LLM output text
-            
-        Returns:
-            List of search query strings
-        """
-        try:
-            # Try to parse as JSON first
-            if text.strip().startswith('[') and text.strip().endswith(']'):
-                return json.loads(text)
-            
-            # Fallback: extract queries from numbered list or bullet points
-            queries = []
-            lines = text.strip().split('\n')
-            
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                    
-                # Remove numbering and bullet points
-                clean_line = re.sub(r'^\d+\.\s*', '', line)
-                clean_line = re.sub(r'^[-*]\s*', '', clean_line)
-                clean_line = clean_line.strip('"\'')
-                
-                if clean_line and len(clean_line) > 3:
-                    queries.append(clean_line)
-                    
-            return queries[:10]  # Limit to 10 queries max
-            
-        except Exception as e:
-            logger.error(f"Error parsing search queries: {e}")
-            return [text.strip()]
 
 
 class RelevanceScoreParser(BaseOutputParser):
@@ -135,119 +94,75 @@ def initialize_llm() -> ChatGroq:
     )
 
 
-def generate_search_queries(text_input: str, k: int = 5) -> List[str]:
-    """Generate k best search queries for finding relevant AI/data science content.
-    
-    This function uses an LLM to analyze the input text and generate optimized
-    search queries that will help find the most relevant articles, websites,
-    and news related to AI trends and data science.
-    
-    Args:
-        text_input: The input text describing the search intent
-        k: Number of search queries to generate (default: 5)
-        
-    Returns:
-        List of k search query strings optimized for finding relevant content
-        
-    Raises:
-        Exception: If LLM initialization or query generation fails
-    """
-    try:
-        llm = initialize_llm()
-        
-        prompt_template = PromptTemplate(
-            input_variables = ["text_input", "k"],
-            template = """
-You are an expert at creating search queries for finding the latest AI and data science trends, news, and announcements.
-
-Given the following input text, generate {k} highly effective search queries that will help find the most relevant and recent articles, websites, blog posts, and news related to AI trends and data science.
-
-Input text: "{text_input}"
-
-Guidelines for creating search queries:
-1. Focus on recent developments and trends
-2. Include specific AI/ML/data science terminology
-3. Consider different aspects (research, industry news, tools, breakthroughs)
-4. Use keywords that news sites and tech blogs commonly use
-5. Include time-sensitive terms like "2024", "latest", "new", "breakthrough"
-
-Your response should EXACTLY follow the format:
-[
-    "query 1",
-    "query 2",
-    "query 3"
-]
-
-without any introduction or explanation.
-"""
-        )
-        
-        chain = prompt_template | llm | SearchQueryParser()
-        queries = chain.invoke({
-            "text_input": text_input,
-            "k": k
-        })
-        
-        # Ensure we have exactly k queries
-        if len(queries) < k:
-            # Pad with variations of the input
-            base_query = text_input.strip()
-            while len(queries) < k:
-                queries.append(f"{base_query} latest news")
-                queries.append(f"{base_query} trends 2024")
-                queries.append(f"{base_query} breakthrough")
-                
-        return queries[:k]
-        
-    except Exception as e:
-        logger.error(f"Error generating search queries: {e}")
-        # Fallback to simple queries
-        return [
-            f"{text_input} AI trends",
-            f"{text_input} latest news",
-            f"{text_input} data science",
-            f"{text_input} machine learning",
-            f"{text_input} artificial intelligence"
-        ][:k]
-
 
 def extract_text_from_url(url: str, max_length: int = 500) -> str:
-    """Extract and summarize text content from a URL.
+    """Extract and summarize text content from a URL using LangChain's UnstructuredURLLoader.
     
     Args:
         url: The URL to extract text from
         max_length: Maximum length of extracted text
         
     Returns:
-        Extracted and cleaned text content
+        Extracted and cleaned text content, or empty string if error content detected
     """
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, headers = headers, timeout = 10)
-        response.raise_for_status()
+        # Use LangChain's UnstructuredURLLoader
+        loader = UnstructuredURLLoader(urls = [url])
+        docs = loader.load()
         
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Remove unwanted elements
-        for element in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-            element.decompose()
-        
-        # Extract text from paragraphs and headings
-        text_elements = soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-        text = ' '.join([elem.get_text().strip() for elem in text_elements])
-        
-        # Clean and truncate text
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text[:max_length] + "..." if len(text) > max_length else text
+        if docs and len(docs) > 0:
+            # Get the text content from the first document
+            text = docs[0].page_content
+            
+            # Clean and normalize whitespace
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            # Check for error content patterns (case-insensitive)
+            error_patterns = [
+                r'403\s*forbidden',
+                r'404\s*not\s*found',
+                r'500\s*internal\s*server\s*error',
+                r'502\s*bad\s*gateway',
+                r'503\s*service\s*unavailable',
+                r'504\s*gateway\s*timeout',
+                r'nginx.*error',
+                r'apache.*error',
+                r'server\s*error',
+                r'access\s*denied',
+                r'permission\s*denied',
+                r'cloudflare.*error',
+                r'this\s*page\s*is\s*not\s*available',
+                r'page\s*not\s*found',
+                r'website\s*is\s*temporarily\s*unavailable',
+                r'maintenance\s*mode',
+                r'blocked\s*by\s*administrator'
+            ]
+            
+            # Check if text contains error patterns
+            text_lower = text.lower()
+            for pattern in error_patterns:
+                if re.search(pattern, text_lower):
+                    logger.warning(f"Error content detected from {url}: {pattern}")
+                    return ""
+            
+            # Additional check: if text is very short and contains common error keywords
+            if len(text) < 100 and any(keyword in text_lower for keyword in 
+                ['error', 'forbidden', 'denied', 'unavailable', 'blocked']):
+                logger.warning(f"Short error content detected from {url}")
+                return ""
+            
+            # Truncate if necessary
+            return text[:max_length] + "..." if len(text) > max_length else text
+        else:
+            logger.warning(f"No content extracted from {url}")
+            return ""
         
     except Exception as e:
         logger.warning(f"Could not extract text from {url}: {e}")
         return ""
 
 
-def search_web_content(search_query: str, k: int = 5) -> List[LinkSummary]:
+def search_web_content(search_query: str, k: int = 5, region: str = "ph", date_restrict: str = 'd7') -> List[LinkSummary]:
     """Search the web using Google Search API and return k [link, summary] pairs.
     
     This function searches the internet using Google Search API and returns
@@ -256,19 +171,40 @@ def search_web_content(search_query: str, k: int = 5) -> List[LinkSummary]:
     Args:
         search_query: The search query to use
         k: Number of results to return (default: 5)
+        region: Country code for regional search results (default: "ph" for Philippines)
+        date_restrict: Date restriction for results (e.g., "w1" = last week, "d7" = last 7 days, "m1" = last month)
         
     Returns:
         List of LinkSummary objects containing links and summaries
         
     Note:
         Requires GOOGLE_CSE_ID and GOOGLE_API_KEY environment variables
+        Common region codes: "ph" (Philippines), "us" (USA), "uk" (UK), "sg" (Singapore)
+        Date restrict options: "d1", "d7", "w1", "m1", "m3", "m6", "y1"
     """
     try:        
         # Initialize Google search
         search = GoogleSearchAPIWrapper(k = k * 2)  # Get more results to filter
         
-        # Perform search
-        results = search.results(search_query, k * 2)
+        # Enhanced search parameters to match web interface behavior
+        search_params = {
+            "gl": region,       # Geolocation
+            "lr": "lang_en",    # Language restriction
+            "safe": "medium",   # Safe search (off, medium, high)
+            "filter": "1",      # Include similar results (0=exclude, 1=include)
+        }
+        
+        # Add date restriction if specified
+        if date_restrict:
+            search_params["dateRestrict"] = date_restrict
+        
+        # Debug logging to see what's being sent to the API
+        logger.info(f"Search query: '{search_query}'")
+        logger.info(f"Search params: {search_params}")
+        logger.info(f"Expected results: {k * 2}")
+        
+        results = search.results(search_query, k * 2, search_params = search_params)
+        logger.info(f"Actual results returned: {len(results)}")
         
         link_summaries = []
         
@@ -359,10 +295,8 @@ Please rate the relevance of each of the following {num_items} pieces of content
 Content to evaluate:
 {content_text}
 
-Return ONLY a JSON array of {num_items} numerical scores (0.0 to 1.0), like:
+Return EXACTLY an array of {num_items} numerical scores (0.0 to 1.0), following the format below:
 [0.9, 0.7, 0.3, 0.8, 0.5]
-
-Relevance scores:
 """
         )
         
@@ -393,84 +327,101 @@ Relevance scores:
         return link_summaries[:k]
 
 
-def get_relevant_ai_trends(text_input: str, k: int = 5) -> List[LinkSummary]:
-    """Get the top k most relevant [link, summary] pairs for AI trends.
+def get_relevant_ai_trends(search_queries: List[str], ranking_context: str = "", k: int = 5, region: str = "ph", date_restrict: str = 'd7') -> dict[str, List[LinkSummary]]:
+    """Get the top k most relevant [link, summary] pairs for each search query.
     
-    This is the main orchestration function that combines all other functions
-    to provide end-to-end search and ranking for AI and data science content.
+    This function processes each search query individually, searching and ranking 
+    results separately for each query.
     
     Args:
-        text_input: The input text describing what to search for
-        k: Number of top results to return (default: 5)
+        search_queries: List of search query strings to use
+        ranking_context: Optional context text for relevance ranking (if empty, uses each query)
+        k: Number of top results to return per query (default: 5)
+        region: Country code for regional search results (default: "ph" for Philippines)
+        date_restrict: Date restriction for results (e.g., "w1" = last week, "d7" = last 7 days)
         
     Returns:
-        List of top k most relevant LinkSummary objects for AI trends
+        Dictionary where keys are search queries and values are lists of top k LinkSummary objects
     """
     try:
-        logger.info(f"Starting AI trends search for: {text_input}")
+        logger.info(f"Starting AI trends search with {len(search_queries)} queries")
         
-        # Step 1: Generate optimized search queries
-        logger.info("Generating search queries...")
-        search_queries = generate_search_queries(text_input, k = 3)
-        logger.info(f"Generated {len(search_queries)} search queries")
+        results_by_query = {}
         
-        # Step 2: Search web content for each query
-        logger.info("Searching web content...")
-        all_link_summaries = []
-        
+        # Process each search query individually
         for query in search_queries:
-            results = search_web_content(query, k = k)
-            all_link_summaries.extend(results)
-            logger.info(f"Found {len(results)} results for query: {query}")
+            logger.info(f"Processing query: '{query}'")
             
-        # Remove duplicates based on URL
-        unique_summaries = []
-        seen_links = set()
-        
-        for ls in all_link_summaries:
-            if ls.link not in seen_links:
-                unique_summaries.append(ls)
-                seen_links.add(ls.link)
+            try:
+                # Step 1: Search web content for this specific query
+                logger.info(f"Searching web content for: {query}")
+                query_results = search_web_content(query, k = k * 2, region = region, date_restrict = date_restrict)  # Get more results to rank
+                logger.info(f"Found {len(query_results)} results for query: {query}")
                 
-        logger.info(f"Found {len(unique_summaries)} unique results")
+                if query_results:
+                    # Step 2: Rank results by relevance for this specific query
+                    logger.info(f"Ranking results for query: {query}")
+                    # Use ranking_context if provided, otherwise use the current query
+                    context_for_ranking = ranking_context if ranking_context else query
+                    ranked_results = rank_by_relevance(context_for_ranking, query_results, k = k)
+                    
+                    results_by_query[query] = ranked_results
+                    logger.info(f"Returning top {len(ranked_results)} results for query: {query}")
+                else:
+                    results_by_query[query] = []
+                    logger.warning(f"No results found for query: {query}")
+                    
+            except Exception as e:
+                logger.error(f"Error processing query '{query}': {e}")
+                results_by_query[query] = []
         
-        # Step 3: Rank by relevance
-        logger.info("Ranking results by relevance...")
-        ranked_results = rank_by_relevance(text_input, unique_summaries, k = k)
-        
-        logger.info(f"Returning top {len(ranked_results)} most relevant results")
-        return ranked_results
+        logger.info(f"Completed processing all {len(search_queries)} queries")
+        return results_by_query
         
     except Exception as e:
         logger.error(f"Error in get_relevant_ai_trends: {e}")
-        return []
+        return {}
 
 
 # Example usage and testing
 if __name__ == "__main__":
-    # # Test the main function
-    # test_input = "Philippines AI trends"
-    
-    # print(f"Searching for: {test_input}")
-    # print("=" * 50)
-    
-    # results = get_relevant_ai_trends(test_input, k = 3)
-    
-    # for i, result in enumerate(results, 1):
-    #     print(f"\n{i}. Relevance Score: {result.relevance_score:.2f}")
-    #     print(f"   Link: {result.link}")
-    #     print(f"   Summary: {result.summary[:200]}...")
-    #     print("-" * 50)
-
-    test_input = "Philippines AI trends this year"
-    results = generate_search_queries(test_input, k = 2)
-    print('-' * 30)
+    # Test with static search queries (new approach)
+    search_query = "latest ai news in the philippines"
+    results = search_web_content(search_query, k = 10, region = "ph", date_restrict = "w1")
     for result in results:
         print(result)
         print('-' * 30)
-    web_results = search_web_content(results[1], k = 2)
-    print('-' * 30)
-    for result in web_results:
-        print(result.link)
-        print(result.summary)
-        print('-' * 30)
+    # search_queries = [
+    #     "latest ai news in the philippines",
+    #     "artificial intelligence trends philippines 2024",
+    #     "machine learning developments manila"
+    # ]
+    
+    # print("Testing AI Trends Agent with Static Queries")
+    # print("=" * 50)
+    # print(f"Search queries: {search_queries}")
+    
+    # # Test the main orchestration function with last week filter
+    # results_dict = get_relevant_ai_trends(
+    #     search_queries = search_queries,
+    #     ranking_context = "AI trends and developments in the Philippines",
+    #     k = 3,
+    #     region = "ph",
+    #     date_restrict = "w1"  # Last week only
+    # )
+    
+    # print(f"\nResults by Query:")
+    # print("=" * 50)
+    
+    # for query, results in results_dict.items():
+    #     print(f"\n🔍 Query: '{query}'")
+    #     print(f"📊 Found {len(results)} results:")
+    #     print("-" * 30)
+        
+    #     for i, result in enumerate(results, 1):
+    #         print(f"{i}. Relevance: {result.relevance_score:.2f}")
+    #         print(f"   Link: {result.link}")
+    #         print(f"   Summary: {result.summary[:150]}...")
+    #         print()
+        
+    #     print("=" * 50)
